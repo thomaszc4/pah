@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import ApprovalActions from './ApprovalActions';
+import { StatusBadge } from '@/components/ui';
 
 export default async function BusinessDashboard() {
   const supabase = await createClient();
@@ -93,7 +94,7 @@ export default async function BusinessDashboard() {
         <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-2xl shadow-sm p-5">
           <div className="text-xs font-medium uppercase tracking-wider text-slate-300">Total spent</div>
           <div className="text-3xl font-semibold mt-2 tracking-tight">${(totalSpent / 100).toLocaleString()}</div>
-          <div className="text-xs text-slate-400 mt-0.5">this period</div>
+          <div className="text-xs text-slate-300 mt-0.5">this period</div>
         </div>
       </div>
 
@@ -194,7 +195,15 @@ export default async function BusinessDashboard() {
                         })}
                     </div>
                   </div>
-                  <StatusBadge status={booking.status} />
+                  <StatusBadge
+                    status={booking.status}
+                    label={
+                      booking.status === 'offered' ? 'Offered to Interpreter' :
+                      booking.status === 'pending_business_approval' ? 'Awaiting Approval' :
+                      booking.status === 'no_match' ? 'No Interpreter Yet' :
+                      undefined
+                    }
+                  />
                 </div>
               </Link>
             ))}
@@ -274,42 +283,3 @@ function EmptyState({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    pending_business_approval: 'bg-amber-100 text-amber-800',
-    pending: 'bg-amber-100 text-amber-800',
-    matching: 'bg-blue-100 text-blue-800',
-    offered: 'bg-blue-100 text-blue-800',
-    no_match: 'bg-red-100 text-red-800',
-    confirmed: 'bg-emerald-100 text-emerald-800',
-    interpreter_en_route: 'bg-violet-100 text-violet-800',
-    in_progress: 'bg-violet-100 text-violet-800',
-    completed: 'bg-slate-100 text-slate-700',
-    billed: 'bg-slate-100 text-slate-700',
-    cancelled: 'bg-red-100 text-red-800',
-  };
-
-  const labels: Record<string, string> = {
-    pending_business_approval: 'Awaiting Approval',
-    pending: 'Pending',
-    matching: 'Finding Interpreter',
-    offered: 'Offered to Interpreter',
-    no_match: 'No Interpreter Yet',
-    confirmed: 'Confirmed',
-    interpreter_en_route: 'On the Way',
-    in_progress: 'In Progress',
-    completed: 'Completed',
-    billed: 'Completed',
-    cancelled: 'Cancelled',
-  };
-
-  return (
-    <span
-      className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        styles[status] || 'bg-slate-100 text-slate-700'
-      }`}
-    >
-      {labels[status] || status}
-    </span>
-  );
-}

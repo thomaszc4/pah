@@ -26,6 +26,16 @@ function toRad(deg: number): number {
 }
 
 /**
+ * Convenience wrapper accepting {lat, lng} objects.
+ */
+export function haversineMiles(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  return distanceMiles(a.lat, a.lng, b.lat, b.lng);
+}
+
+/**
  * Estimates driving time in minutes based on straight-line distance.
  * Rough approximation: assumes 30 mph average in urban areas.
  */

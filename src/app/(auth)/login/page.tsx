@@ -75,7 +75,11 @@ function LoginForm() {
           <h2 className="text-xl font-semibold text-slate-900 mb-6">Welcome back</h2>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">
+            <div
+              role="alert"
+              aria-live="polite"
+              className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm"
+            >
               {error}
             </div>
           )}

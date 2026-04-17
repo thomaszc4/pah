@@ -1,25 +1,61 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useEffect, useState, use } from 'react';
 import Link from 'next/link';
+import { createClient } from '@/lib/supabase/client';
+import { BookingChat } from '@/components/chat/BookingChat';
+import { LocationPusher } from './LocationPusher';
+import { StatusBadge } from '@/components/ui';
 
-export default function JobDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const [booking, setBooking] = useState<Record<string, unknown> | null>(null);
+interface Booking {
+  id: string;
+  status: string;
+  specialization_required: string;
+  location_type: string;
+  scheduled_start: string | null;
+  address_line1: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  public_notes: string | null;
+  estimated_duration_minutes: number;
+  client_name: string | null;
+  authorized_max_minutes: number | null;
+  interpreter_payout_cents: number | null;
+  booking_type: string;
+}
+
+export default function JobDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = use(params);
+  const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [waitMinutes, setWaitMinutes] = useState(0);
   const [interpreterNotes, setInterpreterNotes] = useState('');
-  const [overageMinutes, setOverageMinutes] = useState(30);
-  const [overageRequested, setOverageRequested] = useState(false);
-  const [overageLoading, setOverageLoading] = useState(false);
   const [respondLoading, setRespondLoading] = useState(false);
   const [declineReason, setDeclineReason] = useState('');
   const [showDeclineForm, setShowDeclineForm] = useState(false);
+  const [deafIntroVideo, setDeafIntroVideo] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string>('');
 
   useEffect(() => {
     fetchBooking();
+    (async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) setUserId(user.id);
+    })();
+    // Realtime
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`booking:${id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'bookings', filter: `id=eq.${id}` }, () => fetchBooking())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [id]);
 
   async function fetchBooking() {
@@ -27,18 +63,53 @@ export default function JobDetailPage() {
     if (res.ok) {
       const data = await res.json();
       setBooking(data);
-      if (data.overage_requested_at) setOverageRequested(true);
+      // #6 Fetch Deaf user's intro video (shown only when offered)
+      if (data.deaf_user_id && ['offered', 'confirmed', 'interpreter_en_route', 'in_progress'].includes(data.status)) {
+        const supabase = createClient();
+        const { data: prefs } = await supabase
+          .from('deaf_user_preferences')
+          .select('intro_video_url')
+          .eq('user_id', data.deaf_user_id)
+          .maybeSingle();
+        if (prefs?.intro_video_url) setDeafIntroVideo(prefs.intro_video_url);
+      }
     }
     setLoading(false);
   }
 
-  async function handleAction(action: string) {
+  async function handleRespond(decision: 'accept' | 'decline') {
+    setRespondLoading(true);
+    await fetch(`/api/bookings/${id}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, reason: decision === 'decline' ? declineReason : undefined }),
+    });
+    await fetchBooking();
+    setRespondLoading(false);
+    setShowDeclineForm(false);
+  }
+
+  async function handleEnRoute() {
+    setActionLoading(true);
+    await fetch(`/api/bookings/${id}/en-route`, { method: 'POST' });
+    await fetchBooking();
+    setActionLoading(false);
+  }
+
+  async function handleArrived() {
+    setActionLoading(true);
+    await fetch(`/api/bookings/${id}/arrived`, { method: 'POST' });
+    await fetchBooking();
+    setActionLoading(false);
+  }
+
+  async function handleComplete() {
     setActionLoading(true);
     await fetch(`/api/bookings/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action,
+        action: 'checkout',
         wait_time_minutes: waitMinutes,
         interpreter_notes: interpreterNotes,
       }),
@@ -47,66 +118,18 @@ export default function JobDetailPage() {
     setActionLoading(false);
   }
 
-  async function handleRequestOverage() {
-    setOverageLoading(true);
-    try {
-      const res = await fetch(`/api/bookings/${id}/overage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ additional_minutes: overageMinutes }),
-      });
-      if (res.ok) {
-        setOverageRequested(true);
-      }
-    } catch {
-      // silently fail
-    }
-    setOverageLoading(false);
-  }
-
-  async function handleRespond(decision: 'accept' | 'decline') {
-    setRespondLoading(true);
-    try {
-      const res = await fetch(`/api/bookings/${id}/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          decision,
-          reason: decision === 'decline' ? declineReason : undefined,
-        }),
-      });
-      if (res.ok) {
-        await fetchBooking();
-      }
-    } catch {
-      // silently fail
-    }
-    setRespondLoading(false);
-    setShowDeclineForm(false);
-  }
-
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900" />
-      </div>
-    );
+    return <div className="py-20 text-center text-slate-500">Loading…</div>;
   }
-
   if (!booking) {
     return <p className="text-center text-slate-600 py-20">Job not found</p>;
   }
 
-  const status = String(booking.status);
-  const hasMaxMinutes = !!booking.authorized_max_minutes;
-  const maxMinutes = Number(booking.authorized_max_minutes) || 0;
+  const status = booking.status;
 
   return (
     <div className="max-w-2xl mx-auto">
-      <Link
-        href="/interpreter/jobs"
-        className="text-sm text-slate-500 hover:text-slate-700 mb-4 inline-block font-medium"
-      >
+      <Link href="/interpreter/jobs" className="text-sm text-slate-500 hover:text-slate-700 mb-4 inline-block font-medium">
         ← Back to jobs
       </Link>
 
@@ -114,75 +137,85 @@ export default function JobDetailPage() {
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-start justify-between">
             <div>
-              <h1 className="text-xl font-semibold text-slate-900">
-                {String(booking.specialization_required).charAt(0).toUpperCase() +
-                  String(booking.specialization_required).slice(1)}{' '}
-                Interpreting
+              <h1 className="text-xl font-semibold text-slate-900 capitalize">
+                {booking.specialization_required.replace(/_/g, ' ')} Interpreting
               </h1>
               <p className="text-sm text-slate-600 mt-1">
                 {booking.location_type === 'in_person' ? 'In Person' : 'Video Remote'}
+                {booking.booking_type === 'urgent' && (
+                  <span className="ml-2 text-rose-600 font-semibold">URGENT</span>
+                )}
               </p>
             </div>
-            <StatusBadge status={status} />
+            <StatusBadge
+              status={status}
+              label={status === 'offered' ? 'Offer pending' : undefined}
+            />
           </div>
         </div>
 
-        {/* Job Details */}
+        {/* #21 Client name prominently displayed */}
+        {booking.client_name && (
+          <div className="px-6 py-4 bg-blue-50 border-b border-blue-100">
+            <div className="text-xs font-medium uppercase tracking-wider text-blue-700">Client</div>
+            <div className="text-lg font-semibold text-blue-900 mt-0.5">{booking.client_name}</div>
+          </div>
+        )}
+
+        {/* #6 Deaf intro video */}
+        {deafIntroVideo && ['offered', 'confirmed'].includes(status) && (
+          <div className="px-6 py-4 border-b border-slate-100">
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-500 mb-2">
+              Client introduction video
+            </div>
+            <video controls src={deafIntroVideo} className="w-full rounded-xl border border-slate-200" />
+          </div>
+        )}
+
         <div className="p-6 space-y-4">
-          {!!booking.scheduled_start && (
+          {booking.scheduled_start && (
             <DetailRow label="When">
-              {new Date(String(booking.scheduled_start)).toLocaleDateString('en-US', {
-                weekday: 'long',
-                month: 'long',
-                day: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-              })}
+              {new Date(booking.scheduled_start).toLocaleString()}
             </DetailRow>
           )}
-
-          {!!booking.address_line1 && (
+          {booking.address_line1 && (
             <DetailRow label="Where">
-              {String(booking.address_line1)}
-              {booking.city ? `, ${String(booking.city)}` : ''}
-              {booking.state ? `, ${String(booking.state)}` : ''} {booking.zip ? String(booking.zip) : ''}
+              {booking.address_line1}
+              {booking.city && `, ${booking.city}`}
+              {booking.state && `, ${booking.state}`} {booking.zip || ''}
             </DetailRow>
           )}
-
-          {!!booking.public_notes && (
-            <DetailRow label="Client notes">
-              <span className="text-sm">{String(booking.public_notes)}</span>
-            </DetailRow>
-          )}
-
-          <DetailRow label="Estimated duration">
-            {Math.round(Number(booking.estimated_duration_minutes) / 60)} hour(s)
-            {hasMaxMinutes && (
-              <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
-                Org cap: {maxMinutes >= 60 ? `${maxMinutes / 60}h` : `${maxMinutes}m`}
+          <DetailRow label="Duration">
+            ~{Math.round(booking.estimated_duration_minutes / 60)} hour(s)
+            {booking.authorized_max_minutes && (
+              <span className="ml-2 text-xs font-medium text-blue-700 bg-blue-100 rounded-full px-2 py-0.5">
+                capped at {Math.round(booking.authorized_max_minutes / 60)}h
               </span>
             )}
           </DetailRow>
+          {booking.public_notes && (
+            <DetailRow label="Client notes">
+              <span className="text-sm">{booking.public_notes}</span>
+            </DetailRow>
+          )}
         </div>
 
-        {/* Actions based on status */}
+        {/* Actions */}
         <div className="p-6 border-t border-slate-100 space-y-4">
-          {/* Offered — interpreter must accept or decline */}
           {status === 'offered' && (
             <div className="space-y-3">
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-2">
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
                 <h3 className="text-sm font-semibold text-blue-900">You&apos;ve been offered this job</h3>
                 <p className="text-xs text-blue-700 mt-1">
-                  Review the details above and accept or decline. If you decline, the job will be offered to another interpreter.
+                  Review the details above and accept or decline. If you decline, the job moves on.
                 </p>
               </div>
-
               {showDeclineForm ? (
                 <div className="space-y-2">
                   <textarea
                     value={declineReason}
                     onChange={(e) => setDeclineReason(e.target.value)}
-                    placeholder="Reason for declining (optional)…"
+                    placeholder="Reason for declining (optional)"
                     rows={2}
                     className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white resize-none"
                   />
@@ -190,13 +223,13 @@ export default function JobDetailPage() {
                     <button
                       onClick={() => handleRespond('decline')}
                       disabled={respondLoading}
-                      className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-xl text-sm font-medium disabled:opacity-50 transition-colors"
+                      className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
                     >
                       {respondLoading ? 'Declining…' : 'Confirm Decline'}
                     </button>
                     <button
                       onClick={() => setShowDeclineForm(false)}
-                      className="px-4 py-2.5 border border-slate-300 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                      className="px-4 py-2.5 border border-slate-300 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50"
                     >
                       Cancel
                     </button>
@@ -207,14 +240,14 @@ export default function JobDetailPage() {
                   <button
                     onClick={() => handleRespond('accept')}
                     disabled={respondLoading}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-colors"
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-medium disabled:opacity-50"
                   >
                     {respondLoading ? 'Accepting…' : 'Accept Job'}
                   </button>
                   <button
                     onClick={() => setShowDeclineForm(true)}
                     disabled={respondLoading}
-                    className="px-5 py-3 border border-red-200 text-red-700 rounded-xl font-medium hover:bg-red-50 transition-colors"
+                    className="px-5 py-3 border border-red-200 text-red-700 rounded-xl font-medium hover:bg-red-50"
                   >
                     Decline
                   </button>
@@ -224,82 +257,30 @@ export default function JobDetailPage() {
           )}
 
           {status === 'confirmed' && (
-            <>
-              <button
-                onClick={() => handleAction('en_route')}
-                disabled={actionLoading}
-                className="w-full bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-colors"
-              >
-                {actionLoading ? 'Updating…' : "I'm on my way"}
-              </button>
-              <button
-                onClick={() => handleAction('checkin')}
-                disabled={actionLoading}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-colors"
-              >
-                {actionLoading ? 'Updating…' : "I've arrived — start session"}
-              </button>
-            </>
+            <button
+              onClick={handleEnRoute}
+              disabled={actionLoading}
+              className="w-full bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-xl font-medium disabled:opacity-50"
+            >
+              {actionLoading ? 'Updating…' : "I'm on my way"}
+            </button>
           )}
 
           {status === 'interpreter_en_route' && (
             <button
-              onClick={() => handleAction('checkin')}
+              onClick={handleArrived}
               disabled={actionLoading}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-colors"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-medium disabled:opacity-50"
             >
               {actionLoading ? 'Updating…' : "I've arrived — start session"}
             </button>
           )}
 
           {status === 'in_progress' && (
-            <div className="space-y-5">
-              {/* Overage request (only show if org-capped booking) */}
-              {hasMaxMinutes && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                  <h3 className="text-sm font-semibold text-blue-900 mb-1">
-                    Session running long?
-                  </h3>
-                  <p className="text-xs text-blue-700 mb-3">
-                    This booking is capped at {maxMinutes >= 60 ? `${maxMinutes / 60} hour${maxMinutes > 60 ? 's' : ''}` : `${maxMinutes} min`} by the organization.
-                    Request additional time and they'll be notified for approval.
-                  </p>
-
-                  {overageRequested ? (
-                    <div className="flex items-center gap-2 text-sm text-emerald-700 font-medium">
-                      <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                      </svg>
-                      Extension requested — waiting for org approval
-                    </div>
-                  ) : (
-                    <div className="flex gap-2">
-                      <select
-                        value={overageMinutes}
-                        onChange={(e) => setOverageMinutes(Number(e.target.value))}
-                        className="px-3 py-2 border border-blue-200 rounded-lg text-sm bg-white"
-                      >
-                        <option value={15}>+15 min</option>
-                        <option value={30}>+30 min</option>
-                        <option value={60}>+1 hour</option>
-                        <option value={90}>+1.5 hours</option>
-                        <option value={120}>+2 hours</option>
-                      </select>
-                      <button
-                        onClick={handleRequestOverage}
-                        disabled={overageLoading}
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
-                      >
-                        {overageLoading ? 'Requesting…' : 'Request extra time'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
+            <div className="space-y-4">
               <div>
                 <label htmlFor="wait" className="block text-sm font-medium text-slate-700 mb-1">
-                  Wait time before session started (minutes)
+                  Wait time before session started (min)
                 </label>
                 <input
                   id="wait"
@@ -310,10 +291,9 @@ export default function JobDetailPage() {
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-xl bg-white"
                 />
               </div>
-
               <div>
                 <label htmlFor="notes" className="block text-sm font-medium text-slate-700 mb-1">
-                  Session notes (optional, NO medical/legal details)
+                  Session notes (NO medical details)
                 </label>
                 <textarea
                   id="notes"
@@ -321,19 +301,12 @@ export default function JobDetailPage() {
                   onChange={(e) => setInterpreterNotes(e.target.value)}
                   rows={2}
                   className="w-full px-3 py-2.5 border border-slate-300 rounded-xl bg-white resize-none"
-                  placeholder="General notes about the session…"
                 />
-                {String(booking.specialization_required) === 'medical' && (
-                  <p className="text-xs text-red-600 mt-1">
-                    HIPAA: Do NOT include patient names, diagnoses, or treatment details.
-                  </p>
-                )}
               </div>
-
               <button
-                onClick={() => handleAction('checkout')}
+                onClick={handleComplete}
                 disabled={actionLoading}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-colors"
+                className="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-medium disabled:opacity-50"
               >
                 {actionLoading ? 'Completing…' : 'End session'}
               </button>
@@ -343,15 +316,29 @@ export default function JobDetailPage() {
           {status === 'completed' && (
             <div className="text-center py-4">
               <p className="text-emerald-700 font-semibold">Session completed</p>
-              {!!booking.interpreter_payout_cents && (
+              {booking.interpreter_payout_cents && (
                 <p className="text-2xl font-semibold text-slate-900 mt-2 tracking-tight">
-                  +${(Number(booking.interpreter_payout_cents) / 100).toFixed(2)}
+                  +${(booking.interpreter_payout_cents / 100).toFixed(2)}
                 </p>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {/* #13 Location pusher — runs only when en-route */}
+      {status === 'interpreter_en_route' && (
+        <div className="mt-4">
+          <LocationPusher bookingId={id} />
+        </div>
+      )}
+
+      {/* #8/#12 Chat */}
+      {userId && ['confirmed', 'interpreter_en_route', 'in_progress'].includes(status) && (
+        <div className="mt-6">
+          <BookingChat bookingId={id} currentUserId={userId} />
+        </div>
+      )}
     </div>
   );
 }
@@ -365,28 +352,3 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    offered: 'bg-amber-100 text-amber-800',
-    confirmed: 'bg-emerald-100 text-emerald-800',
-    interpreter_en_route: 'bg-violet-100 text-violet-800',
-    in_progress: 'bg-violet-100 text-violet-800',
-    completed: 'bg-slate-100 text-slate-700',
-    billed: 'bg-slate-100 text-slate-700',
-    cancelled: 'bg-red-100 text-red-800',
-  };
-  const labels: Record<string, string> = {
-    offered: 'Offer Pending',
-    confirmed: 'Confirmed',
-    interpreter_en_route: 'On the Way',
-    in_progress: 'In Progress',
-    completed: 'Completed',
-    billed: 'Completed',
-    cancelled: 'Cancelled',
-  };
-  return (
-    <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${styles[status] || 'bg-slate-100 text-slate-700'}`}>
-      {labels[status] || status}
-    </span>
-  );
-}

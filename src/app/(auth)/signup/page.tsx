@@ -30,9 +30,12 @@ export default function SignupPage() {
   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [smsOptIn, setSmsOptIn] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const smsEnabled = process.env.NEXT_PUBLIC_SMS_ENABLED !== 'false';
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
@@ -42,13 +45,14 @@ export default function SignupPage() {
     setError('');
 
     const supabase = createClient();
-    const { error: signupError } = await supabase.auth.signUp({
+    const { data: authData, error: signupError } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
           full_name: fullName,
           role: selectedRole,
+          phone,
         },
       },
     });
@@ -59,10 +63,23 @@ export default function SignupPage() {
       return;
     }
 
+    // Persist phone on the profile row (created by trigger).
+    if (authData.user && phone.trim()) {
+      await supabase.from('profiles').update({ phone }).eq('id', authData.user.id);
+    }
+
+    // Prime Deaf user preferences with SMS opt-in.
+    if (authData.user && selectedRole === 'deaf_user' && phone.trim()) {
+      await supabase
+        .from('deaf_user_preferences')
+        .upsert({ user_id: authData.user.id, notify_sms: smsOptIn });
+    }
+
     const redirectMap: Record<UserRole, string> = {
       deaf_user: '/dashboard',
       interpreter: '/interpreter/onboarding',
       business_admin: '/business/onboarding',
+      platform_admin: '/admin',
     };
 
     router.push(redirectMap[selectedRole]);
@@ -119,7 +136,11 @@ export default function SignupPage() {
               <h2 className="text-xl font-semibold text-slate-900 mb-5">Create your account</h2>
 
               {error && (
-                <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm">
+                <div
+                  role="alert"
+                  aria-live="polite"
+                  className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-xl mb-4 text-sm"
+                >
                   {error}
                 </div>
               )}
@@ -155,6 +176,32 @@ export default function SignupPage() {
                     className="w-full px-3 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
                     placeholder="you@example.com"
                   />
+                </div>
+
+                <div>
+                  <label htmlFor="phone" className="block text-sm font-medium text-slate-700 mb-1">
+                    Phone {smsEnabled ? '(for SMS confirmations)' : '(optional)'}
+                  </label>
+                  <input
+                    id="phone"
+                    type="tel"
+                    autoComplete="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                    placeholder="(555) 123-4567"
+                  />
+                  {selectedRole === 'deaf_user' && smsEnabled && (
+                    <label className="flex items-start gap-2 mt-2 text-xs text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smsOptIn}
+                        onChange={(e) => setSmsOptIn(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span>Text me booking updates so I don&apos;t need an app to stay informed.</span>
+                    </label>
+                  )}
                 </div>
 
                 <div>

@@ -55,6 +55,10 @@ export async function GET(
         specializations,
         avg_rating,
         total_jobs,
+        profile_photo_url,
+        current_lat,
+        current_lng,
+        last_location_update,
         profiles:user_id(full_name, avatar_url)
       ),
       organization:organizations(name, org_type)

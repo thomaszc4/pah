@@ -1,6 +1,14 @@
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { StatusBadge, EmptyState } from '@/components/ui';
+
+function startOfWeek(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - x.getDay());
+  return x;
+}
 
 export default async function InterpreterDashboard() {
   const supabase = await createClient();
@@ -37,6 +45,28 @@ export default async function InterpreterDashboard() {
     .order('actual_end', { ascending: false })
     .limit(5);
 
+  // Current pay period earnings (for the #14 dashboard tile)
+  const periodStart = interpProfile.payout_frequency === 'biweekly'
+    ? new Date(startOfWeek().getTime() - 7 * 24 * 60 * 60 * 1000)
+    : startOfWeek();
+  const { data: periodJobs } = await supabase
+    .from('bookings')
+    .select('interpreter_payout_cents')
+    .eq('interpreter_id', interpProfile.id)
+    .in('status', ['completed', 'billed'])
+    .gte('actual_end', periodStart.toISOString());
+  const currentPeriodCents = (periodJobs ?? []).reduce(
+    (s: number, b: { interpreter_payout_cents: number | null }) => s + (b.interpreter_payout_cents || 0),
+    0,
+  );
+
+  // Feed count — how many open jobs in the interpreter's specializations
+  const { count: feedCount } = await supabase
+    .from('bookings')
+    .select('id', { count: 'exact', head: true })
+    .in('status', ['matching', 'no_match'])
+    .in('specialization_required', interpProfile.specializations ?? ['general']);
+
   const tierLabel: Record<string, string> = {
     provisional: 'Provisional',
     certified: 'Certified',
@@ -45,6 +75,11 @@ export default async function InterpreterDashboard() {
   };
 
   const firstName = profile?.full_name?.split(' ')[0] || 'Interpreter';
+  const periodLabel = interpProfile.payout_frequency === 'biweekly'
+    ? 'Biweekly period'
+    : interpProfile.payout_frequency === 'weekly'
+    ? 'This week'
+    : 'Per-job';
 
   return (
     <div>
@@ -61,20 +96,52 @@ export default async function InterpreterDashboard() {
         <AvailabilityBadge isAvailable={interpProfile.is_available} />
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="bg-gradient-to-br from-emerald-500 to-teal-600 text-white rounded-2xl shadow-sm p-5">
+          <div className="text-xs font-medium uppercase tracking-wider text-emerald-100">
+            {periodLabel}
+          </div>
+          <div className="text-2xl font-semibold mt-2 tracking-tight">
+            ${(currentPeriodCents / 100).toFixed(2)}
+          </div>
+          <Link
+            href="/interpreter/earnings"
+            className="text-xs text-emerald-100 hover:text-white mt-1 inline-block"
+          >
+            View earnings →
+          </Link>
+        </div>
         <StatCard label="Total jobs" value={interpProfile.total_jobs} />
-        <StatCard
-          label="Earnings"
-          value={`$${(interpProfile.total_earnings_cents / 100).toLocaleString()}`}
-          highlight
-        />
         <StatCard
           label="Avg rating"
           value={interpProfile.avg_rating > 0 ? interpProfile.avg_rating.toFixed(1) : '—'}
         />
-        <StatCard label="Service radius" value={`${interpProfile.service_radius_miles} mi`} />
+        <StatCard
+          label="Service radius"
+          value={`${interpProfile.service_radius_miles} mi`}
+        />
       </div>
+
+      {/* Feed CTA */}
+      {(feedCount ?? 0) > 0 && (
+        <Link
+          href="/interpreter/feed"
+          className="block mb-6 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-sm transition-all"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="font-semibold text-blue-900">
+                {feedCount} open {feedCount === 1 ? 'job' : 'jobs'} waiting
+              </div>
+              <p className="text-sm text-blue-800 mt-0.5">
+                In your specializations. Browse the feed and claim one.
+              </p>
+            </div>
+            <span className="text-blue-700 font-semibold text-sm shrink-0">Open feed →</span>
+          </div>
+        </Link>
+      )}
 
       {/* Onboarding checklist */}
       {!interpProfile.certifications_verified && (
@@ -94,6 +161,13 @@ export default async function InterpreterDashboard() {
               • Your certifications are{' '}
               <span className="font-semibold">pending review</span>
             </li>
+            <li>
+              •{' '}
+              <Link href="/interpreter/profile" className="underline underline-offset-4 font-medium">
+                Complete your profile
+              </Link>{' '}
+              (photo, bio, intro video) so clients know who you are
+            </li>
           </ul>
         </div>
       )}
@@ -104,17 +178,17 @@ export default async function InterpreterDashboard() {
           <h2 className="text-lg font-semibold text-slate-900">Upcoming jobs</h2>
           <Link
             href="/interpreter/jobs"
-            className="text-sm font-medium text-blue-600 hover:text-blue-700 underline underline-offset-4"
+            className="text-sm font-medium text-blue-700 hover:text-blue-800 underline underline-offset-4"
           >
-            View all jobs
+            View all
           </Link>
         </div>
         {!upcomingJobs || upcomingJobs.length === 0 ? (
           <EmptyState
             title="No upcoming jobs"
-            subtitle="Browse available jobs to pick up your next booking."
-            cta="Browse available jobs"
-            ctaHref="/interpreter/jobs"
+            subtitle="Browse the feed to pick up your next booking."
+            cta="Browse the feed"
+            ctaHref="/interpreter/feed"
           />
         ) : (
           <div className="space-y-3">
@@ -124,12 +198,10 @@ export default async function InterpreterDashboard() {
                 href={`/interpreter/jobs/${job.id}`}
                 className="block bg-white rounded-2xl border border-slate-200 shadow-sm p-5 hover:border-slate-300 hover:shadow-md transition-all"
               >
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      {job.specialization_required.charAt(0).toUpperCase() +
-                        job.specialization_required.slice(1)}{' '}
-                      Interpreting
+                <div className="flex justify-between items-start gap-4">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-slate-900 capitalize">
+                      {job.specialization_required.replace(/_/g, ' ')} interpreting
                     </div>
                     <div className="text-sm text-slate-600 mt-1">
                       {job.scheduled_start &&
@@ -142,12 +214,15 @@ export default async function InterpreterDashboard() {
                         })}
                     </div>
                     {job.address_line1 && (
-                      <div className="text-sm text-slate-500 mt-0.5">
+                      <div className="text-sm text-slate-600 mt-0.5">
                         {job.address_line1}, {job.city}
                       </div>
                     )}
                   </div>
-                  <StatusBadge status={job.status} />
+                  <StatusBadge
+                    status={job.status}
+                    label={job.status === 'offered' ? 'Action required' : undefined}
+                  />
                 </div>
               </Link>
             ))}
@@ -155,7 +230,7 @@ export default async function InterpreterDashboard() {
         )}
       </section>
 
-      {/* Recent Jobs */}
+      {/* Recent */}
       <section>
         <h2 className="text-lg font-semibold text-slate-900 mb-4">Recent completed</h2>
         {!recentJobs || recentJobs.length === 0 ? (
@@ -173,9 +248,8 @@ export default async function InterpreterDashboard() {
                 }`}
               >
                 <div>
-                  <span className="font-semibold text-sm text-slate-900">
-                    {job.specialization_required.charAt(0).toUpperCase() +
-                      job.specialization_required.slice(1)}
+                  <span className="font-semibold text-sm text-slate-900 capitalize">
+                    {job.specialization_required.replace(/_/g, ' ')}
                   </span>
                   <span className="text-slate-400 mx-2" aria-hidden="true">·</span>
                   <span className="text-sm text-slate-600">
@@ -201,23 +275,13 @@ export default async function InterpreterDashboard() {
 function StatCard({
   label,
   value,
-  highlight = false,
 }: {
   label: string;
   value: string | number;
-  highlight?: boolean;
 }) {
-  if (highlight) {
-    return (
-      <div className="bg-gradient-to-br from-emerald-500 to-teal-600 text-white rounded-2xl shadow-sm p-5">
-        <div className="text-xs font-medium uppercase tracking-wider text-emerald-100">{label}</div>
-        <div className="text-2xl font-semibold mt-2 tracking-tight">{value}</div>
-      </div>
-    );
-  }
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-      <div className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="text-xs font-medium uppercase tracking-wider text-slate-600">{label}</div>
       <div className="text-2xl font-semibold text-slate-900 mt-2 tracking-tight">{value}</div>
     </div>
   );
@@ -229,7 +293,7 @@ function AvailabilityBadge({ isAvailable }: { isAvailable: boolean }) {
       className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold ${
         isAvailable
           ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
-          : 'bg-slate-100 border border-slate-200 text-slate-600'
+          : 'bg-slate-100 border border-slate-200 text-slate-700'
       }`}
     >
       <div
@@ -239,56 +303,5 @@ function AvailabilityBadge({ isAvailable }: { isAvailable: boolean }) {
       />
       {isAvailable ? 'Available' : 'Unavailable'}
     </div>
-  );
-}
-
-function EmptyState({
-  title,
-  subtitle,
-  cta,
-  ctaHref,
-}: {
-  title: string;
-  subtitle: string;
-  cta?: string;
-  ctaHref?: string;
-}) {
-  return (
-    <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center">
-      <p className="font-semibold text-slate-900">{title}</p>
-      <p className="text-sm text-slate-500 mt-1 max-w-sm mx-auto">{subtitle}</p>
-      {cta && ctaHref && (
-        <Link
-          href={ctaHref}
-          className="inline-block mt-4 text-sm font-medium text-blue-600 hover:text-blue-700 underline underline-offset-4"
-        >
-          {cta} →
-        </Link>
-      )}
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    offered: 'bg-amber-100 text-amber-800',
-    confirmed: 'bg-emerald-100 text-emerald-800',
-    interpreter_en_route: 'bg-violet-100 text-violet-800',
-    in_progress: 'bg-violet-100 text-violet-800',
-  };
-  const labels: Record<string, string> = {
-    offered: 'Action Required',
-    confirmed: 'Confirmed',
-    interpreter_en_route: 'On the Way',
-    in_progress: 'In Progress',
-  };
-  return (
-    <span
-      className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        styles[status] || 'bg-slate-100 text-slate-700'
-      }`}
-    >
-      {labels[status] || status}
-    </span>
   );
 }

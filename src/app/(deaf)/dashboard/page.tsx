@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { StatusBadge, EmptyState } from '@/components/ui';
 
 export default async function DeafDashboard() {
   const supabase = await createClient();
@@ -30,6 +31,12 @@ export default async function DeafDashboard() {
     .order('created_at', { ascending: false })
     .limit(5);
 
+  const { count: prefsCount } = await supabase
+    .from('deaf_user_preferences')
+    .select('user_id', { count: 'exact', head: true })
+    .eq('user_id', user.id);
+  const hasPreferences = (prefsCount ?? 0) > 0;
+
   return (
     <div>
       <div className="flex items-start sm:items-center justify-between mb-8 flex-col sm:flex-row gap-4">
@@ -48,12 +55,30 @@ export default async function DeafDashboard() {
           </Link>
           <Link
             href="/book/urgent"
-            className="bg-white border border-red-200 text-red-700 hover:bg-red-50 px-5 py-2.5 rounded-xl font-medium transition-colors"
+            className="bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 px-5 py-2.5 rounded-xl font-medium transition-colors"
           >
             Need one now
           </Link>
         </div>
       </div>
+
+      {!hasPreferences && (
+        <Link
+          href="/preferences"
+          className="block mb-8 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-sm transition-all"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="font-semibold text-blue-900">Set your interpreter preferences</div>
+              <p className="text-sm text-blue-800 mt-0.5">
+                Tell us about preferred gender, specializations, and notification channels so we
+                match you better.
+              </p>
+            </div>
+            <span className="text-blue-700 font-semibold text-sm shrink-0">Set up →</span>
+          </div>
+        </Link>
+      )}
 
       {/* Upcoming Bookings */}
       <section className="mb-10">
@@ -149,69 +174,3 @@ export default async function DeafDashboard() {
   );
 }
 
-function EmptyState({
-  title,
-  subtitle,
-  cta,
-  ctaHref,
-}: {
-  title: string;
-  subtitle: string;
-  cta?: string;
-  ctaHref?: string;
-}) {
-  return (
-    <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center">
-      <p className="font-semibold text-slate-900">{title}</p>
-      <p className="text-sm text-slate-500 mt-1 max-w-sm mx-auto">{subtitle}</p>
-      {cta && ctaHref && (
-        <Link
-          href={ctaHref}
-          className="inline-block mt-4 text-sm font-medium text-blue-600 hover:text-blue-700 underline underline-offset-4"
-        >
-          {cta} →
-        </Link>
-      )}
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, string> = {
-    pending: 'bg-amber-100 text-amber-800',
-    matching: 'bg-blue-100 text-blue-800',
-    offered: 'bg-blue-100 text-blue-800',
-    confirmed: 'bg-emerald-100 text-emerald-800',
-    interpreter_en_route: 'bg-violet-100 text-violet-800',
-    in_progress: 'bg-violet-100 text-violet-800',
-    completed: 'bg-slate-100 text-slate-700',
-    billed: 'bg-slate-100 text-slate-700',
-    cancelled: 'bg-red-100 text-red-800',
-    no_match: 'bg-red-100 text-red-800',
-    disputed: 'bg-orange-100 text-orange-800',
-  };
-
-  const labels: Record<string, string> = {
-    pending: 'Pending',
-    matching: 'Finding Interpreter',
-    offered: 'Finding Interpreter',
-    confirmed: 'Confirmed',
-    interpreter_en_route: 'On the Way',
-    in_progress: 'In Progress',
-    completed: 'Completed',
-    billed: 'Completed',
-    cancelled: 'Cancelled',
-    no_match: 'No Match',
-    disputed: 'Disputed',
-  };
-
-  return (
-    <span
-      className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-        styles[status] || 'bg-slate-100 text-slate-700'
-      }`}
-    >
-      {labels[status] || status}
-    </span>
-  );
-}

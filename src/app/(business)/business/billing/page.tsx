@@ -86,15 +86,15 @@ export default async function BillingPage() {
         <div className="text-4xl font-semibold mt-1 tracking-tight">
           ${(totalSpent / 100).toLocaleString()}
         </div>
-        <div className="text-xs text-slate-400 mt-1">{(invoices || []).length} bookings</div>
+        <div className="text-xs text-slate-300 mt-1">{(invoices || []).length} bookings</div>
       </div>
 
       {/* Invoice History */}
       <h2 className="text-lg font-semibold text-slate-900 mb-4">Invoice history</h2>
       {!invoices || invoices.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
-          <p className="text-slate-500 font-medium">No invoices yet</p>
-          <p className="text-sm text-slate-400 mt-1">
+          <p className="text-slate-700 font-medium">No invoices yet</p>
+          <p className="text-sm text-slate-600 mt-1">
             Your past bookings will appear here.
           </p>
         </div>

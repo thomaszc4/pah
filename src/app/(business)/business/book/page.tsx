@@ -4,20 +4,41 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import type { Specialization, LocationType } from '@/types';
+import { SPECIALIZATION_LABELS } from '@/types';
+import { ADANotice } from '@/components/legal/ADANotice';
+import { VRIWarning } from '@/components/legal/VRIWarning';
+import { CURRENT_ADA_NOTICE, CURRENT_VRI_WARNING } from '@/lib/attestation/ada';
 
-const SPECIALIZATIONS: { value: Specialization; label: string }[] = [
-  { value: 'general', label: 'General' },
-  { value: 'medical', label: 'Medical' },
-  { value: 'legal', label: 'Legal' },
-  { value: 'educational', label: 'Educational' },
-  { value: 'mental_health', label: 'Mental Health' },
+const SPECIALIZATION_ORDER: Specialization[] = [
+  'general',
+  'medical',
+  'legal',
+  'educational',
+  'mental_health',
+  'deaf_interpreter',
+  'trilingual',
+  'deaf_blind',
+  'oral_transliterator',
+  'pediatric',
+  'performing_arts',
+  'religious',
+  'cart_captioning',
+  'other',
 ];
+
+interface ClientPreferenceSnapshot {
+  prefers_location_type?: string;
+  preferred_gender?: string[];
+  preferred_specializations?: string[];
+}
 
 export default function BusinessBookPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [orgId, setOrgId] = useState<string | null>(null);
+  const [orgName, setOrgName] = useState<string>('');
+  const [orgType, setOrgType] = useState<string>('');
   const [paymentOnFile, setPaymentOnFile] = useState(false);
   const [orgAddress, setOrgAddress] = useState<{
     address_line1?: string;
@@ -27,18 +48,29 @@ export default function BusinessBookPage() {
   }>({});
 
   const [specialization, setSpecialization] = useState<Specialization>('general');
+  const [specializationOther, setSpecializationOther] = useState('');
   const [locationType, setLocationType] = useState<LocationType>('in_person');
+  const [pendingLocationChange, setPendingLocationChange] = useState<LocationType | null>(null);
+  const [vriAcknowledged, setVriAcknowledged] = useState(false);
   const [date, setDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [clientName, setClientName] = useState('');
   const [clientEmail, setClientEmail] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
   const [notes, setNotes] = useState('');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [state, setState] = useState('');
   const [zip, setZip] = useState('');
   const [useOrgAddress, setUseOrgAddress] = useState(true);
+
+  // #19 ADA acknowledgement gate
+  const [adaAcknowledged, setAdaAcknowledged] = useState(false);
+
+  // #22 Preference auto-population
+  const [clientPrefs, setClientPrefs] = useState<ClientPreferenceSnapshot | null>(null);
+  const [prefLookupState, setPrefLookupState] = useState<'idle' | 'loading' | 'found' | 'none'>('idle');
 
   useEffect(() => {
     const supabase = createClient();
@@ -47,13 +79,15 @@ export default function BusinessBookPage() {
       const { data } = await supabase
         .from('organization_members')
         .select(
-          'org_id, organizations(id, payment_method_on_file, org_type, address_line1, city, state, zip)',
+          'org_id, organizations(id, name, payment_method_on_file, org_type, address_line1, city, state, zip, ada_acknowledged_at)',
         )
         .eq('user_id', user.id)
         .single();
       if (data) {
         setOrgId(data.org_id);
         const org = data.organizations as unknown as Record<string, unknown>;
+        setOrgName(String(org?.name ?? ''));
+        setOrgType(String(org?.org_type ?? ''));
         setPaymentOnFile(!!org?.payment_method_on_file);
         setOrgAddress({
           address_line1: String(org?.address_line1 ?? ''),
@@ -61,21 +95,22 @@ export default function BusinessBookPage() {
           state: String(org?.state ?? ''),
           zip: String(org?.zip ?? ''),
         });
-        // Default the address fields to org address
         setAddress(String(org?.address_line1 ?? ''));
         setCity(String(org?.city ?? ''));
         setState(String(org?.state ?? ''));
         setZip(String(org?.zip ?? ''));
-        // Auto-suggest specialization based on org type
-        const orgType = String(org?.org_type || '');
-        if (['medical', 'legal', 'educational'].includes(orgType)) {
-          setSpecialization(orgType as Specialization);
+        // If the org previously acknowledged ADA at onboarding, pre-check.
+        if (org?.ada_acknowledged_at) setAdaAcknowledged(true);
+
+        const orgTypeStr = String(org?.org_type || '');
+        if (['medical', 'legal', 'educational'].includes(orgTypeStr)) {
+          setSpecialization(orgTypeStr as Specialization);
         }
       }
     });
   }, []);
 
-  // Sync when toggling "use org address"
+  // Auto-fill from org address when toggle on
   useEffect(() => {
     if (useOrgAddress) {
       setAddress(orgAddress.address_line1 ?? '');
@@ -85,8 +120,68 @@ export default function BusinessBookPage() {
     }
   }, [useOrgAddress, orgAddress]);
 
+  // #22 debounced client preference lookup by email
+  useEffect(() => {
+    if (!clientEmail || !clientEmail.includes('@')) {
+      setClientPrefs(null);
+      setPrefLookupState('idle');
+      return;
+    }
+    setPrefLookupState('loading');
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/deaf/preferences/lookup?email=${encodeURIComponent(clientEmail)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.preferences) {
+            setClientPrefs(data.preferences);
+            setPrefLookupState('found');
+            // Auto-apply format preference
+            if (data.preferences.prefers_location_type === 'in_person') {
+              setLocationType('in_person');
+            }
+          } else {
+            setClientPrefs(null);
+            setPrefLookupState('none');
+          }
+        } else {
+          setPrefLookupState('none');
+        }
+      } catch {
+        setPrefLookupState('none');
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [clientEmail]);
+
+  function handleLocationTypeChange(next: LocationType) {
+    if (next === 'vri' && !vriAcknowledged) {
+      setPendingLocationChange('vri');
+      return;
+    }
+    setLocationType(next);
+  }
+
+  function handleVRIAcknowledge() {
+    setVriAcknowledged(true);
+    setLocationType('vri');
+    setPendingLocationChange(null);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!adaAcknowledged) {
+      setError('Please acknowledge the ADA notice to proceed.');
+      return;
+    }
+    if (!clientName.trim()) {
+      setError('Client name is required for all business bookings.');
+      return;
+    }
+    if (specialization === 'other' && !specializationOther.trim()) {
+      setError('Please describe the type of interpreting needed.');
+      return;
+    }
     setLoading(true);
     setError('');
 
@@ -98,20 +193,26 @@ export default function BusinessBookPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         specialization_required: specialization,
+        specialization_other_description:
+          specialization === 'other' ? specializationOther : null,
         location_type: locationType,
         booking_type: 'scheduled',
+        booking_context: 'business',
         scheduled_start: scheduledStart.toISOString(),
         scheduled_end: scheduledEnd.toISOString(),
         estimated_duration_minutes: durationMinutes,
         public_notes: notes,
-        booking_context: 'business',
         organization_id: orgId,
-        client_name: clientName,
-        client_email: clientEmail,
+        client_name: clientName.trim(),
+        client_email: clientEmail.trim() || null,
+        client_phone: clientPhone.trim() || null,
         address_line1: locationType === 'in_person' ? address : null,
         city: locationType === 'in_person' ? city : null,
         state: locationType === 'in_person' ? state : null,
         zip: locationType === 'in_person' ? zip : null,
+        ada_notice_version: CURRENT_ADA_NOTICE.version,
+        vri_warning_acknowledged: locationType === 'vri' ? vriAcknowledged : false,
+        vri_warning_version: locationType === 'vri' ? CURRENT_VRI_WARNING.version : null,
       }),
     });
 
@@ -125,6 +226,8 @@ export default function BusinessBookPage() {
     router.push('/business/bookings');
   }
 
+  const deafClientPrefersInPerson = clientPrefs?.prefers_location_type === 'in_person';
+
   return (
     <div className="max-w-2xl mx-auto">
       <h1 className="text-3xl font-semibold text-slate-900 tracking-tight mb-2">
@@ -134,17 +237,21 @@ export default function BusinessBookPage() {
 
       {!paymentOnFile && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-          <p className="text-red-800 text-sm font-semibold">
-            Payment method required
-          </p>
+          <p className="text-red-800 text-sm font-semibold">Payment method required</p>
           <p className="text-sm text-red-700 mt-0.5">
-            Add a payment method in <a href="/business/billing" className="underline font-medium">Billing</a> before booking.
+            Add a payment method in{' '}
+            <a href="/business/billing" className="underline font-medium">Billing</a>{' '}
+            before booking.
           </p>
         </div>
       )}
 
       {error && (
-        <div className="bg-red-50 text-red-800 px-4 py-3 rounded-xl mb-6 text-sm border border-red-200">
+        <div
+          role="alert"
+          aria-live="polite"
+          className="bg-red-50 text-red-800 px-4 py-3 rounded-xl mb-6 text-sm border border-red-200"
+        >
           {error}
         </div>
       )}
@@ -153,25 +260,30 @@ export default function BusinessBookPage() {
         onSubmit={handleSubmit}
         className="space-y-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-8"
       >
-        {/* Client info */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* #21 Client info — NAME REQUIRED */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label htmlFor="clientName" className="block text-sm font-medium text-slate-700 mb-1.5">
-              Client name <span className="text-slate-400 font-normal">(optional)</span>
+              Client name <span className="text-rose-600">*</span>
             </label>
             <input
               id="clientName"
               type="text"
+              required
               value={clientName}
               onChange={(e) => setClientName(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
-              placeholder="Deaf client's name"
+              placeholder="Deaf client's full name"
               autoComplete="name"
+              aria-describedby="clientName-hint"
             />
+            <p id="clientName-hint" className="text-xs text-slate-500 mt-1">
+              Required so the interpreter knows who they&apos;re meeting.
+            </p>
           </div>
           <div>
             <label htmlFor="clientEmail" className="block text-sm font-medium text-slate-700 mb-1.5">
-              Client email <span className="text-slate-400 font-normal">(optional)</span>
+              Client email
             </label>
             <input
               id="clientEmail"
@@ -179,42 +291,111 @@ export default function BusinessBookPage() {
               value={clientEmail}
               onChange={(e) => setClientEmail(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
-              placeholder="If they have a PAH account"
+              placeholder="For notifications"
               autoComplete="email"
+            />
+            {prefLookupState === 'found' && (
+              <p className="text-xs text-emerald-700 mt-1 font-medium">
+                Preferences found ↓
+              </p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="clientPhone" className="block text-sm font-medium text-slate-700 mb-1.5">
+              Client phone
+            </label>
+            <input
+              id="clientPhone"
+              type="tel"
+              value={clientPhone}
+              onChange={(e) => setClientPhone(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              placeholder="For SMS updates"
+              autoComplete="tel"
             />
           </div>
         </div>
 
-        {/* Specialization */}
+        {/* #22 Preference snapshot */}
+        {clientPrefs && prefLookupState === 'found' && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-emerald-900 mb-2">
+              We found {clientName || 'this client'}&apos;s preferences
+            </h3>
+            <ul className="text-sm text-emerald-800 space-y-1">
+              {clientPrefs.prefers_location_type && clientPrefs.prefers_location_type !== 'no_preference' && (
+                <li>
+                  <strong>Format:</strong>{' '}
+                  {clientPrefs.prefers_location_type === 'in_person' ? 'In-person preferred' : 'VRI preferred'}
+                </li>
+              )}
+              {clientPrefs.preferred_gender && clientPrefs.preferred_gender.length > 0 && (
+                <li>
+                  <strong>Interpreter gender:</strong> {clientPrefs.preferred_gender.join(', ')}
+                </li>
+              )}
+              {clientPrefs.preferred_specializations && clientPrefs.preferred_specializations.length > 0 && (
+                <li>
+                  <strong>Specializations:</strong>{' '}
+                  {clientPrefs.preferred_specializations
+                    .map((s) => SPECIALIZATION_LABELS[s as Specialization] || s)
+                    .join(', ')}
+                </li>
+              )}
+            </ul>
+            <p className="text-xs text-emerald-700 mt-2">
+              These preferences will help us match the right interpreter. You can still
+              override them for this booking.
+            </p>
+          </div>
+        )}
+
+        {/* #18 Specialization — expanded list */}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">
             Type of interpreting
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {SPECIALIZATIONS.map((spec) => (
+            {SPECIALIZATION_ORDER.map((spec) => (
               <button
-                key={spec.value}
+                key={spec}
                 type="button"
-                onClick={() => setSpecialization(spec.value)}
-                className={`p-2.5 rounded-xl border-2 text-sm font-medium transition-colors ${
-                  specialization === spec.value
+                onClick={() => setSpecialization(spec)}
+                className={`p-2.5 rounded-xl border-2 text-sm font-medium transition-colors text-left ${
+                  specialization === spec
                     ? 'border-blue-500 bg-blue-50 text-blue-700'
                     : 'border-slate-200 text-slate-700 hover:border-slate-300 bg-white'
                 }`}
               >
-                {spec.label}
+                {SPECIALIZATION_LABELS[spec]}
               </button>
             ))}
           </div>
+          {specialization === 'other' && (
+            <div className="mt-3">
+              <label htmlFor="specOther" className="block text-xs font-medium text-slate-700 mb-1">
+                Please describe <span className="text-rose-600">*</span>
+              </label>
+              <input
+                id="specOther"
+                type="text"
+                value={specializationOther}
+                onChange={(e) => setSpecializationOther(e.target.value)}
+                required
+                className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                placeholder="E.g., Conference interpreting, Tactile ProTactile..."
+              />
+            </div>
+          )}
         </div>
 
-        {/* Location Type */}
+        {/* Format — with #20 VRI friction */}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-2">Format</label>
           <div className="flex gap-3">
             <button
               type="button"
-              onClick={() => setLocationType('in_person')}
+              onClick={() => handleLocationTypeChange('in_person')}
               className={`flex-1 p-3 rounded-xl border-2 text-sm font-medium transition-colors ${
                 locationType === 'in_person'
                   ? 'border-blue-500 bg-blue-50 text-blue-700'
@@ -225,17 +406,31 @@ export default function BusinessBookPage() {
             </button>
             <button
               type="button"
-              onClick={() => setLocationType('vri')}
+              onClick={() => handleLocationTypeChange('vri')}
               className={`flex-1 p-3 rounded-xl border-2 text-sm font-medium transition-colors ${
                 locationType === 'vri'
-                  ? 'border-blue-500 bg-blue-50 text-blue-700'
+                  ? 'border-amber-500 bg-amber-50 text-amber-700'
                   : 'border-slate-200 text-slate-700 hover:border-slate-300 bg-white'
               }`}
             >
               Video Remote (VRI)
             </button>
           </div>
+          {locationType === 'vri' && vriAcknowledged && (
+            <p className="text-xs text-amber-700 mt-2">
+              You&apos;ve acknowledged the VRI guidance. Under DOJ rules, the Deaf person&apos;s
+              preference is generally determinative.
+            </p>
+          )}
         </div>
+
+        <VRIWarning
+          open={pendingLocationChange === 'vri'}
+          orgType={orgType}
+          deafUserPrefersInPerson={deafClientPrefersInPerson}
+          onAcknowledge={handleVRIAcknowledge}
+          onCancel={() => setPendingLocationChange(null)}
+        />
 
         {/* Date/Time */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -267,11 +462,12 @@ export default function BusinessBookPage() {
               <option value={120}>2 hr</option>
               <option value={180}>3 hr</option>
               <option value={240}>4 hr</option>
+              <option value={480}>Full day (8 hr)</option>
             </select>
           </div>
         </div>
 
-        {/* Address — in-person only */}
+        {/* Address (in-person only) */}
         {locationType === 'in_person' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -289,10 +485,7 @@ export default function BusinessBookPage() {
               )}
             </div>
             <input
-              id="address"
-              type="text"
-              required
-              value={address}
+              type="text" required value={address}
               onChange={(e) => { setAddress(e.target.value); setUseOrgAddress(false); }}
               className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
               placeholder="Street address"
@@ -330,18 +523,26 @@ export default function BusinessBookPage() {
           <textarea
             id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
             className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
-            placeholder="Any details for the interpreter..."
+            placeholder="Logistics details for the interpreter..."
           />
-          {specialization === 'medical' && (
+          {(specialization === 'medical' || specialization === 'mental_health') && (
             <p className="text-xs text-amber-700 mt-1.5">
-              Do NOT include medical details, diagnoses, or treatment information.
+              Do NOT include PHI or medical details. HIPAA minimum-necessary applies.
             </p>
           )}
         </div>
 
+        {/* #19 ADA acknowledgement */}
+        <ADANotice
+          variant="short"
+          orgName={orgName}
+          checked={adaAcknowledged}
+          onCheckedChange={setAdaAcknowledged}
+        />
+
         <button
           type="submit"
-          disabled={loading || !paymentOnFile}
+          disabled={loading || !paymentOnFile || !adaAcknowledged || !clientName.trim()}
           className="w-full bg-slate-900 hover:bg-slate-800 text-white py-3 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
         >
           {loading ? 'Booking…' : 'Book Interpreter'}

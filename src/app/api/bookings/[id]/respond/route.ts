@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { findAvailableInterpreter } from '@/lib/matching/algorithm';
+import { sendNotification } from '@/lib/notifications/dispatch';
 
 async function getAuthClient() {
   const cookieStore = await cookies();
@@ -105,14 +106,16 @@ export async function POST(
       .eq('interpreter_id', interpProfile.id)
       .eq('status', 'pending');
 
-    // Notify deaf user
-    await serviceClient.from('notifications').insert({
-      user_id: booking.deaf_user_id,
-      type: 'interpreter_confirmed',
-      title: 'Interpreter Confirmed',
-      body: 'An interpreter has accepted your booking!',
-      data: { booking_id: id },
-    });
+    // Notify deaf user (SMS+email via dispatch)
+    if (booking.deaf_user_id) {
+      await sendNotification({
+        userId: booking.deaf_user_id,
+        type: 'interpreter_confirmed',
+        title: 'Interpreter Confirmed',
+        body: 'An interpreter has accepted your booking!',
+        data: { booking_id: id },
+      });
+    }
 
     // Notify org if applicable
     if (booking.organization_id) {
@@ -123,14 +126,17 @@ export async function POST(
         .in('role', ['owner', 'admin']);
 
       if (orgMembers) {
-        const notifications = orgMembers.map((m: { user_id: string }) => ({
-          user_id: m.user_id,
-          type: 'interpreter_confirmed',
-          title: 'Interpreter Confirmed',
-          body: 'An interpreter has accepted the booking request.',
-          data: { booking_id: id },
-        }));
-        await serviceClient.from('notifications').insert(notifications);
+        await Promise.all(
+          orgMembers.map((m: { user_id: string }) =>
+            sendNotification({
+              userId: m.user_id,
+              type: 'interpreter_confirmed',
+              title: 'Interpreter Confirmed',
+              body: 'An interpreter has accepted the booking request.',
+              data: { booking_id: id },
+            }),
+          ),
+        );
       }
     }
 
@@ -180,12 +186,16 @@ export async function POST(
 
   const excludeIds = (declinedOffers || []).map((o: { interpreter_id: string }) => o.interpreter_id);
 
-  // Find the next available interpreter (excluding those who declined)
+  // Find the next available interpreter (excluding those who declined), scored
   const nextMatch = await findAvailableInterpreter({
     specialization: booking.specialization_required,
     scheduledStart: booking.scheduled_start,
     scheduledEnd: booking.scheduled_end,
     excludeInterpreterIds: excludeIds,
+    deafUserId: booking.deaf_user_id,
+    preferences: booking.interpreter_preferences_snapshot,
+    targetLat: booking.lat !== null ? Number(booking.lat) : null,
+    targetLng: booking.lng !== null ? Number(booking.lng) : null,
   });
 
   if (nextMatch) {
@@ -207,12 +217,12 @@ export async function POST(
       offer_order: offerOrder,
       status: 'pending',
       expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-      match_score: 1.0,
-      distance_miles: 0,
+      match_score: nextMatch.score,
+      distance_miles: nextMatch.distanceMiles,
     });
 
-    await serviceClient.from('notifications').insert({
-      user_id: nextMatch.userId,
+    await sendNotification({
+      userId: nextMatch.userId,
       type: 'new_booking_offer',
       title: 'New Job Offer',
       body: `You've been offered a ${booking.specialization_required} interpreting job. Please accept or decline.`,
@@ -231,14 +241,15 @@ export async function POST(
     .update({ status: 'no_match' })
     .eq('id', id);
 
-  // Notify deaf user
-  await serviceClient.from('notifications').insert({
-    user_id: booking.deaf_user_id,
-    type: 'no_interpreter_available',
-    title: 'No Interpreter Available',
-    body: 'We\'re having trouble finding an available interpreter. We\'ll keep trying and notify you.',
-    data: { booking_id: id },
-  });
+  if (booking.deaf_user_id) {
+    await sendNotification({
+      userId: booking.deaf_user_id,
+      type: 'no_interpreter_available',
+      title: 'No Interpreter Available',
+      body: "We're having trouble finding an interpreter. You can wait, switch to VRI, or reschedule.",
+      data: { booking_id: id },
+    });
+  }
 
   return NextResponse.json({
     status: 'declined',

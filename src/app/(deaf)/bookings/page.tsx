@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { PageHeader, EmptyState, StatusBadge } from '@/components/ui';
 
 export default async function BookingsListPage() {
   const supabase = await createClient();
@@ -14,7 +15,7 @@ export default async function BookingsListPage() {
     .order('scheduled_start', { ascending: false });
 
   const upcoming = (bookings || []).filter((b) =>
-    ['confirmed', 'interpreter_en_route', 'in_progress', 'matching', 'offered', 'pending'].includes(b.status),
+    ['confirmed', 'interpreter_en_route', 'in_progress', 'matching', 'offered', 'pending', 'pending_business_approval'].includes(b.status),
   );
   const past = (bookings || []).filter((b) =>
     ['completed', 'billed', 'cancelled', 'no_match', 'disputed'].includes(b.status),
@@ -22,25 +23,30 @@ export default async function BookingsListPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">My Bookings</h1>
-        <Link
-          href="/book"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-        >
-          New Booking
-        </Link>
-      </div>
+      <PageHeader
+        title="My bookings"
+        subtitle="Upcoming and past interpreter appointments"
+        actions={
+          <Link
+            href="/book"
+            className="inline-flex items-center justify-center rounded-xl font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm px-5 py-2.5 text-sm transition-colors"
+          >
+            New booking
+          </Link>
+        }
+      />
 
-      {/* Upcoming */}
-      <section className="mb-8">
-        <h2 className="text-lg font-semibold mb-3">Upcoming</h2>
+      <section className="mb-10">
+        <h2 className="text-lg font-semibold text-slate-900 mb-4">Upcoming</h2>
         {upcoming.length === 0 ? (
-          <p className="text-gray-600 bg-white rounded-xl border border-gray-200 p-6 text-center">
-            No upcoming bookings
-          </p>
+          <EmptyState
+            title="No upcoming bookings"
+            subtitle="When you book an interpreter, it'll show up here."
+            cta="Book an interpreter"
+            ctaHref="/book"
+          />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {upcoming.map((b) => (
               <BookingRow key={b.id} booking={b} />
             ))}
@@ -48,15 +54,15 @@ export default async function BookingsListPage() {
         )}
       </section>
 
-      {/* Past */}
       <section>
-        <h2 className="text-lg font-semibold mb-3">Past</h2>
+        <h2 className="text-lg font-semibold text-slate-900 mb-4">Past</h2>
         {past.length === 0 ? (
-          <p className="text-gray-600 bg-white rounded-xl border border-gray-200 p-6 text-center">
-            No past bookings
-          </p>
+          <EmptyState
+            title="No past bookings yet"
+            subtitle="Completed and cancelled bookings will appear here."
+          />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {past.map((b) => (
               <BookingRow key={b.id} booking={b} />
             ))}
@@ -67,47 +73,42 @@ export default async function BookingsListPage() {
   );
 }
 
-function BookingRow({ booking }: { booking: Record<string, unknown> }) {
-  const statusStyles: Record<string, string> = {
-    confirmed: 'bg-green-100 text-green-800',
-    in_progress: 'bg-purple-100 text-purple-800',
-    completed: 'bg-gray-100 text-gray-800',
-    cancelled: 'bg-red-100 text-red-800',
-    matching: 'bg-blue-100 text-blue-800',
-    no_match: 'bg-amber-100 text-amber-800',
+interface BookingRowProps {
+  booking: {
+    id: string;
+    specialization_required: string;
+    scheduled_start: string | null;
+    status: string;
+    location_type?: string;
   };
+}
+
+function BookingRow({ booking }: BookingRowProps) {
+  const specLabel =
+    booking.specialization_required.charAt(0).toUpperCase() +
+    booking.specialization_required.slice(1).replace(/_/g, ' ');
 
   return (
     <Link
       href={`/bookings/${booking.id}`}
-      className="block bg-white rounded-lg border border-gray-200 p-4 hover:border-blue-300 transition-colors"
+      className="block bg-white rounded-2xl border border-slate-200 shadow-sm p-5 hover:border-slate-300 hover:shadow-md transition-all"
     >
-      <div className="flex justify-between items-center">
-        <div>
-          <span className="font-medium">
-            {String(booking.specialization_required).charAt(0).toUpperCase() +
-              String(booking.specialization_required).slice(1)}{' '}
-            Interpreting
-          </span>
-          <span className="text-gray-600 mx-2">&middot;</span>
-          <span className="text-sm text-gray-600">
+      <div className="flex justify-between items-start gap-4">
+        <div className="min-w-0">
+          <div className="font-semibold text-slate-900">{specLabel} interpreting</div>
+          <div className="text-sm text-slate-600 mt-1">
             {booking.scheduled_start
-              ? new Date(String(booking.scheduled_start)).toLocaleDateString('en-US', {
+              ? new Date(booking.scheduled_start).toLocaleDateString('en-US', {
+                  weekday: 'short',
                   month: 'short',
                   day: 'numeric',
                   hour: 'numeric',
                   minute: '2-digit',
                 })
-              : 'TBD'}
-          </span>
+              : 'Time to be determined'}
+          </div>
         </div>
-        <span
-          className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
-            statusStyles[String(booking.status)] || 'bg-gray-100 text-gray-800'
-          }`}
-        >
-          {String(booking.status).replace('_', ' ')}
-        </span>
+        <StatusBadge status={booking.status} />
       </div>
     </Link>
   );

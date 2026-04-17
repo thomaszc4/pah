@@ -100,7 +100,11 @@ export default function BusinessOnboarding() {
       </div>
 
       {error && (
-        <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
+        <div
+          role="alert"
+          aria-live="polite"
+          className="bg-red-50 text-red-700 px-4 py-3 rounded-xl mb-6 text-sm border border-red-200"
+        >
           {error}
         </div>
       )}

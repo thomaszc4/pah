@@ -16,6 +16,7 @@ const NAV_LINKS: Record<UserRole, NavLink[]> = {
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/book', label: 'Book Interpreter' },
     { href: '/bookings', label: 'My Bookings' },
+    { href: '/businesses', label: 'Businesses' },
     { href: '/preferences', label: 'Preferences' },
   ],
   interpreter: [

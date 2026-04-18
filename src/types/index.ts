@@ -50,7 +50,27 @@ export type CertificationType =
 
 export type VerificationStatus = 'pending' | 'verified' | 'rejected' | 'expired';
 
-export type OrgType = 'medical' | 'legal' | 'educational' | 'government' | 'corporate' | 'other';
+export type OrgType = 'medical' | 'legal' | 'educational' | 'government' | 'corporate' | 'agency' | 'other';
+
+export type AgencyDispatchMode = 'supplier' | 'white_label';
+
+export type BookingInvitationStatus = 'pending' | 'accepted' | 'declined' | 'expired';
+
+export type TeamInterpreterRole = 'primary' | 'team';
+
+export type TeamInterpreterStatus = 'offered' | 'confirmed' | 'declined' | 'cancelled' | 'no_show' | 'completed';
+
+export type OrganizationMemberRole = 'owner' | 'admin' | 'member' | 'interpreter_staff';
+
+/**
+ * US states where an ASL interpreter license is required beyond national certification
+ * to perform in-person interpreting. Out-of-state interpreters must hold the applicable
+ * state credential to claim in-person bookings in these states.
+ */
+export const LICENSURE_STATES = [
+  'TX', 'MI', 'AZ', 'KY', 'NM', 'MA', 'WI', 'ND', 'SC', 'NE', 'IL', 'IN', 'OK', 'LA',
+] as const;
+export type LicensureState = typeof LICENSURE_STATES[number];
 
 export type BookingType = 'scheduled' | 'urgent' | 'on_demand';
 
@@ -184,15 +204,93 @@ export interface Organization {
   ada_acknowledged_at: string | null;
   ada_acknowledged_by: string | null;
   ada_acknowledged_version: string | null;
+  avg_rating: number | null;
+  rating_count: number;
+  public_slug: string | null;
+  accessibility_summary: Record<string, unknown> | null;
+  is_agency: boolean;
+  agency_markup_basis_points: number | null;
+  agency_dispatch_mode: AgencyDispatchMode;
   created_at: string;
   updated_at: string;
 }
+
+export interface BookingInvitation {
+  id: string;
+  booking_id: string;
+  email: string | null;
+  phone: string | null;
+  full_name: string | null;
+  token_hash: string;
+  status: BookingInvitationStatus;
+  sent_via: string[];
+  sent_at: string;
+  accepted_at: string | null;
+  declined_at: string | null;
+  expires_at: string;
+  linked_user_id: string | null;
+}
+
+export interface BookingInterpreter {
+  id: string;
+  booking_id: string;
+  interpreter_id: string;
+  role: TeamInterpreterRole;
+  status: TeamInterpreterStatus;
+  offered_at: string;
+  accepted_at: string | null;
+  declined_at: string | null;
+  decline_reason: string | null;
+  payout_cents: number | null;
+}
+
+export interface OrganizationRating {
+  id: string;
+  organization_id: string;
+  booking_id: string;
+  rated_by: string;
+  overall_rating: number;
+  attributes: Record<string, boolean>;
+  review_text: string | null;
+  is_visible: boolean;
+  flagged_for_review: boolean;
+  admin_action: 'kept' | 'hidden' | 'removed' | null;
+  admin_notes: string | null;
+  business_response: string | null;
+  business_response_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgencyInterpreterRate {
+  id: string;
+  organization_id: string;
+  interpreter_id: string;
+  hourly_rate_cents: number;
+  effective_date: string;
+  end_date: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+/** Structured review attributes — keep in sync with the review form UI. */
+export const RATING_ATTRIBUTES: { key: string; label: string; positive: boolean }[] = [
+  { key: 'booked_interpreter_in_advance', label: 'Booked the interpreter in advance (didn\'t make me ask)', positive: true },
+  { key: 'honored_format_preference', label: 'Used in-person when I asked for in-person', positive: true },
+  { key: 'staff_addressed_me_directly', label: 'Staff addressed me directly, not the interpreter', positive: true },
+  { key: 'paid_without_pushback', label: 'Paid for the interpreter without pushback', positive: true },
+  { key: 'scheduled_team_when_needed', label: 'Scheduled a team of 2 when needed', positive: true },
+  { key: 'interpreter_was_qualified', label: 'Interpreter was qualified for the setting', positive: true },
+  { key: 'would_return', label: 'I would return here', positive: true },
+  { key: 'pushed_vri_inappropriately', label: 'Pushed VRI when in-person was needed', positive: false },
+  { key: 'made_me_bring_my_own', label: 'Made me bring my own interpreter', positive: false },
+];
 
 export interface OrganizationMember {
   id: string;
   org_id: string;
   user_id: string;
-  role: 'owner' | 'admin' | 'member';
+  role: OrganizationMemberRole;
   created_at: string;
 }
 

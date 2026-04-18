@@ -4,6 +4,8 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { z } from 'zod';
 import { sendNotification } from '@/lib/notifications/dispatch';
+import { isEligibleForInPerson, ineligibleReason } from '@/lib/licensure/stateMatrix';
+import type { CertificationType } from '@/types';
 
 async function getAuthClient() {
   const cookieStore = await cookies();
@@ -53,6 +55,31 @@ export async function POST(request: Request) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
+
+  // Check the booking to enforce state licensure before claim
+  const { data: targetBooking } = await service
+    .from('bookings')
+    .select('state, location_type')
+    .eq('id', parsed.data.booking_id)
+    .single();
+
+  if (targetBooking?.location_type === 'in_person' && targetBooking?.state) {
+    const { data: certs } = await service
+      .from('certifications')
+      .select('cert_type, valid_in_states')
+      .eq('interpreter_id', interp.id)
+      .eq('verification_status', 'verified');
+    const certRows = (certs ?? []).map((c) => ({
+      cert_type: c.cert_type as CertificationType,
+      valid_in_states: (c.valid_in_states as string[] | null) ?? [],
+    }));
+    if (!isEligibleForInPerson(certRows, targetBooking.state)) {
+      return NextResponse.json(
+        { error: ineligibleReason(certRows, targetBooking.state) ?? 'Not licensed in this state.' },
+        { status: 403 },
+      );
+    }
+  }
 
   // Compare-and-swap: only update if still unclaimed.
   const { data: updated, error } = await service

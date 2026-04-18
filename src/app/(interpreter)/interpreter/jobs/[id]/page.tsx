@@ -323,6 +323,16 @@ export default function JobDetailPage({
               )}
             </div>
           )}
+
+          {/* ICS download — available at any point after scheduling */}
+          {booking.scheduled_start && (
+            <a
+              href={`/api/bookings/${id}/ics`}
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-800 transition-colors"
+            >
+              📅 Add to calendar
+            </a>
+          )}
         </div>
       </div>
 

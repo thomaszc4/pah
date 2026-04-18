@@ -32,6 +32,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <AdminTab href="/admin" label="Overview" />
           <AdminTab href="/admin/certifications" label="Certifications" />
           <AdminTab href="/admin/business-requests" label="Business requests" />
+          <AdminTab href="/admin/reviews" label="Flagged reviews" />
         </div>
         {children}
       </div>

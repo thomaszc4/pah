@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { UserRole } from '@/types';
 
 const ROLES: { value: UserRole; label: string; description: string }[] = [
@@ -25,17 +25,39 @@ const ROLES: { value: UserRole; label: string; description: string }[] = [
 ];
 
 export default function SignupPage() {
+  return (
+    <Suspense>
+      <SignupForm />
+    </Suspense>
+  );
+}
+
+function SignupForm() {
   const router = useRouter();
-  const [step, setStep] = useState<'role' | 'details'>('role');
-  const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
-  const [fullName, setFullName] = useState('');
-  const [email, setEmail] = useState('');
+  const searchParams = useSearchParams();
+  const invitationToken = searchParams.get('invitation');
+  const invitationEmail = searchParams.get('email') ?? '';
+  const invitationName = searchParams.get('name') ?? '';
+  const [step, setStep] = useState<'role' | 'details'>(invitationToken ? 'details' : 'role');
+  const [selectedRole, setSelectedRole] = useState<UserRole | null>(
+    invitationToken ? 'deaf_user' : null,
+  );
+  const [fullName, setFullName] = useState(invitationName);
+  const [email, setEmail] = useState(invitationEmail);
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [smsOptIn, setSmsOptIn] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const smsEnabled = process.env.NEXT_PUBLIC_SMS_ENABLED !== 'false';
+
+  // When an invitation token is present, force Deaf role (invitations are for Deaf clients).
+  useEffect(() => {
+    if (invitationToken) {
+      setSelectedRole('deaf_user');
+      setStep('details');
+    }
+  }, [invitationToken]);
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
@@ -81,6 +103,13 @@ export default function SignupPage() {
       business_admin: '/business/onboarding',
       platform_admin: '/admin',
     };
+
+    // If they signed up via an invitation, bounce back to the invite page
+    // so they can accept and see the booking.
+    if (invitationToken && selectedRole === 'deaf_user') {
+      router.push(`/invite/${invitationToken}`);
+      return;
+    }
 
     router.push(redirectMap[selectedRole]);
   }

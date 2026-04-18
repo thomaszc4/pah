@@ -8,6 +8,7 @@ import { SPECIALIZATION_LABELS } from '@/types';
 import { ADANotice } from '@/components/legal/ADANotice';
 import { VRIWarning } from '@/components/legal/VRIWarning';
 import { CURRENT_ADA_NOTICE, CURRENT_VRI_WARNING } from '@/lib/attestation/ada';
+import { evaluateTeamRequirement } from '@/lib/team/shouldRequireTeam';
 
 const SPECIALIZATION_ORDER: Specialization[] = [
   'general',
@@ -52,12 +53,14 @@ export default function BusinessBookPage() {
   const [locationType, setLocationType] = useState<LocationType>('in_person');
   const [pendingLocationChange, setPendingLocationChange] = useState<LocationType | null>(null);
   const [vriAcknowledged, setVriAcknowledged] = useState(false);
+  const [vriOverrideReason, setVriOverrideReason] = useState<string>('');
   const [date, setDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [clientName, setClientName] = useState('');
   const [clientEmail, setClientEmail] = useState('');
   const [clientPhone, setClientPhone] = useState('');
+  const [notifyClient, setNotifyClient] = useState(true);
   const [notes, setNotes] = useState('');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
@@ -67,6 +70,10 @@ export default function BusinessBookPage() {
 
   // #19 ADA acknowledgement gate
   const [adaAcknowledged, setAdaAcknowledged] = useState(false);
+
+  // C. Team interpreting
+  const [teamOptOut, setTeamOptOut] = useState(false);
+  const [teamOverrideReason, setTeamOverrideReason] = useState('');
 
   // #22 Preference auto-population
   const [clientPrefs, setClientPrefs] = useState<ClientPreferenceSnapshot | null>(null);
@@ -162,8 +169,9 @@ export default function BusinessBookPage() {
     setLocationType(next);
   }
 
-  function handleVRIAcknowledge() {
+  function handleVRIAcknowledge(overrideReason?: string) {
     setVriAcknowledged(true);
+    setVriOverrideReason(overrideReason ?? '');
     setLocationType('vri');
     setPendingLocationChange(null);
   }
@@ -213,6 +221,10 @@ export default function BusinessBookPage() {
         ada_notice_version: CURRENT_ADA_NOTICE.version,
         vri_warning_acknowledged: locationType === 'vri' ? vriAcknowledged : false,
         vri_warning_version: locationType === 'vri' ? CURRENT_VRI_WARNING.version : null,
+        vri_override_reason: locationType === 'vri' && vriOverrideReason ? vriOverrideReason : null,
+        notify_client_of_booking: notifyClient,
+        requires_team: !teamOptOut,
+        team_override_reason: teamOptOut && teamOverrideReason ? teamOverrideReason : null,
       }),
     });
 
@@ -427,6 +439,7 @@ export default function BusinessBookPage() {
         <VRIWarning
           open={pendingLocationChange === 'vri'}
           orgType={orgType}
+          specialization={specialization}
           deafUserPrefersInPerson={deafClientPrefersInPerson}
           onAcknowledge={handleVRIAcknowledge}
           onCancel={() => setPendingLocationChange(null)}
@@ -532,6 +545,32 @@ export default function BusinessBookPage() {
           )}
         </div>
 
+        {/* Team interpreting — auto-required for long / legal / DeafBlind / trilingual */}
+        <TeamRequirementNotice
+          specialization={specialization}
+          durationMinutes={durationMinutes}
+          orgType={orgType}
+          optedOut={teamOptOut}
+          onOptOutChange={setTeamOptOut}
+          overrideReason={teamOverrideReason}
+          onOverrideReasonChange={setTeamOverrideReason}
+        />
+
+        {/* Notify client */}
+        <label className="flex items-start gap-2.5 p-4 border border-slate-200 rounded-xl cursor-pointer">
+          <input
+            type="checkbox"
+            checked={notifyClient}
+            onChange={(e) => setNotifyClient(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-slate-400 text-blue-600 focus:ring-blue-500"
+          />
+          <span className="text-sm text-slate-800 leading-relaxed">
+            <span className="font-medium">Let the Deaf client see this booking.</span>{' '}
+            They&apos;ll get a text/email invitation with the interpreter&apos;s name and ETA.
+            Uncheck for confidential settings (e.g., legal privilege).
+          </span>
+        </label>
+
         {/* #19 ADA acknowledgement */}
         <ADANotice
           variant="short"
@@ -548,6 +587,83 @@ export default function BusinessBookPage() {
           {loading ? 'Booking…' : 'Book Interpreter'}
         </button>
       </form>
+    </div>
+  );
+}
+
+function TeamRequirementNotice({
+  specialization,
+  durationMinutes,
+  orgType,
+  optedOut,
+  onOptOutChange,
+  overrideReason,
+  onOverrideReasonChange,
+}: {
+  specialization: Specialization;
+  durationMinutes: number;
+  orgType: string;
+  optedOut: boolean;
+  onOptOutChange: (v: boolean) => void;
+  overrideReason: string;
+  onOverrideReasonChange: (v: string) => void;
+}) {
+  const evalResult = evaluateTeamRequirement({
+    specialization,
+    durationMinutes,
+    orgType: (orgType || null) as import('@/types').OrgType | null,
+  });
+
+  if (!evalResult.required && !evalResult.recommended) return null;
+
+  return (
+    <div
+      className={`rounded-xl border p-4 ${
+        evalResult.required
+          ? 'bg-amber-50 border-amber-200'
+          : 'bg-blue-50 border-blue-200'
+      }`}
+    >
+      <div className={`text-sm font-semibold ${evalResult.required ? 'text-amber-900' : 'text-blue-900'}`}>
+        {evalResult.required
+          ? 'This booking requires a team of 2 interpreters'
+          : 'A team of 2 interpreters is recommended'}
+      </div>
+      <ul
+        className={`mt-1 space-y-0.5 text-xs ${evalResult.required ? 'text-amber-800' : 'text-blue-800'}`}
+      >
+        {evalResult.reasons.map((r, i) => (
+          <li key={i}>• {r}</li>
+        ))}
+      </ul>
+      <div className={`text-xs mt-2 ${evalResult.required ? 'text-amber-800' : 'text-blue-800'}`}>
+        You&apos;ll be billed for 2 interpreters. Both are paid the full session rate.
+      </div>
+
+      <label className={`flex items-start gap-2 mt-3 text-xs cursor-pointer ${evalResult.required ? 'text-amber-900' : 'text-blue-900'}`}>
+        <input
+          type="checkbox"
+          checked={optedOut}
+          onChange={(e) => onOptOutChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-slate-400"
+        />
+        <span>
+          <strong>Book only 1 interpreter.</strong>{' '}
+          {evalResult.required
+            ? 'I understand this may result in ineffective communication under the ADA. A documented reason is required.'
+            : 'I accept any risk of interpreter fatigue for this session.'}
+        </span>
+      </label>
+
+      {optedOut && evalResult.required && (
+        <textarea
+          rows={2}
+          value={overrideReason}
+          onChange={(e) => onOverrideReasonChange(e.target.value)}
+          placeholder="Required: why are you proceeding with only 1 interpreter despite the requirement?"
+          className="w-full mt-2 px-3 py-2 text-sm bg-white border border-amber-300 rounded-lg resize-none focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none"
+        />
+      )}
     </div>
   );
 }

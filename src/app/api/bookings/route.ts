@@ -8,6 +8,11 @@ import { isRushBooking, calculateClientCharge } from '@/lib/utils/pricing';
 import { PLATFORM_RATES } from '@/types';
 import { CURRENT_ADA_NOTICE, CURRENT_VRI_WARNING } from '@/lib/attestation/ada';
 import { sendNotification } from '@/lib/notifications/dispatch';
+import { sendEmail } from '@/lib/notifications/email';
+import { sendSms } from '@/lib/notifications/sms';
+import { mintToken, hashToken, invitationUrl } from '@/lib/invitations/tokens';
+import { evaluateTeamRequirement } from '@/lib/team/shouldRequireTeam';
+import type { Specialization } from '@/types';
 
 const bookingSchema = z.object({
   specialization_required: z.string().default('general'),
@@ -32,6 +37,10 @@ const bookingSchema = z.object({
   ada_notice_version: z.string().nullable().optional(),
   vri_warning_acknowledged: z.boolean().optional(),
   vri_warning_version: z.string().nullable().optional(),
+  vri_override_reason: z.string().nullable().optional(),
+  notify_client_of_booking: z.boolean().optional(),
+  requires_team: z.boolean().optional(),
+  team_override_reason: z.string().nullable().optional(),
 });
 
 async function getAuthClient() {
@@ -155,6 +164,7 @@ export async function POST(request: Request) {
 
     // #22 Preference snapshot — lookup Deaf user by email if business booked for them
     let preferencesSnapshot: Record<string, unknown> | null = null;
+    let existingClientProfileId: string | null = null;
     if (body.booking_context === 'business' && body.client_email) {
       const { data: clientProfile } = await serviceClient
         .from('profiles')
@@ -162,6 +172,7 @@ export async function POST(request: Request) {
         .eq('email', body.client_email)
         .maybeSingle();
       if (clientProfile) {
+        existingClientProfileId = clientProfile.id;
         const { data: prefs } = await serviceClient
           .from('deaf_user_preferences')
           .select('*')
@@ -171,6 +182,20 @@ export async function POST(request: Request) {
       }
     }
 
+    // C. Team-interpreting evaluation (auto-require for legal / long / DeafBlind etc.)
+    const teamEval = evaluateTeamRequirement({
+      specialization: body.specialization_required as Specialization,
+      durationMinutes: body.estimated_duration_minutes,
+    });
+    const requiresTeam = teamEval.required || (body.requires_team === true);
+    // If the business explicitly overrode a hard-required team, require a reason.
+    if (teamEval.required && body.requires_team === false && !body.team_override_reason) {
+      return NextResponse.json(
+        { error: 'This booking requires a team of 2 interpreters. Provide a documented override reason to proceed with 1.' },
+        { status: 400 },
+      );
+    }
+
     const needsBusinessApproval = body.booking_context === 'business' && organizationId;
     const initialStatus = needsBusinessApproval ? 'pending_business_approval' : 'matching';
 
@@ -178,7 +203,13 @@ export async function POST(request: Request) {
     const { data: booking, error: bookingError } = await serviceClient
       .from('bookings')
       .insert({
-        deaf_user_id: isDeafUser ? user.id : null,
+        // If business knows the Deaf client and they have an account, link immediately.
+        // Otherwise leave null; an invitation will still be sent so they can opt in.
+        deaf_user_id: isDeafUser
+          ? user.id
+          : (body.booking_context === 'business' && existingClientProfileId
+              ? existingClientProfileId
+              : null),
         requested_by: user.id,
         booking_type: body.booking_type,
         booking_context: body.booking_context,
@@ -204,7 +235,16 @@ export async function POST(request: Request) {
         ada_notice_acknowledged_at: body.booking_context === 'business' ? new Date().toISOString() : null,
         ada_notice_version: body.booking_context === 'business' ? body.ada_notice_version : null,
         vri_warning_acknowledged: body.vri_warning_acknowledged ?? false,
+        vri_override_reason: body.vri_override_reason ?? null,
+        vri_override_signed_by: body.vri_override_reason ? user.id : null,
+        vri_override_signed_at: body.vri_override_reason ? new Date().toISOString() : null,
+        vri_override_version: body.vri_override_reason ? CURRENT_VRI_WARNING.version : null,
         interpreter_preferences_snapshot: preferencesSnapshot,
+        requires_team: requiresTeam,
+        team_override_reason: body.team_override_reason ?? null,
+        team_override_signed_by: body.team_override_reason ? user.id : null,
+        team_override_signed_at: body.team_override_reason ? new Date().toISOString() : null,
+        notify_client_of_booking: body.notify_client_of_booking !== false,
         status: initialStatus,
       })
       .select()
@@ -226,8 +266,81 @@ export async function POST(request: Request) {
         specialization_required: body.specialization_required,
         ada_version: body.ada_notice_version,
         vri_acknowledged: body.vri_warning_acknowledged,
+        requires_team: requiresTeam,
       },
     });
+
+    // A. Invitation to Deaf client when business books for them
+    // Only send when: business context, notify_client_of_booking !== false, and we have a contact.
+    if (
+      body.booking_context === 'business'
+      && body.notify_client_of_booking !== false
+      && (body.client_email || body.client_phone)
+    ) {
+      const token = mintToken();
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const link = invitationUrl(appUrl, token);
+      const orgNameForInvite = body.organization_name || 'A business';
+      const whenLabel = body.scheduled_start
+        ? new Date(body.scheduled_start).toLocaleString()
+        : 'soon';
+
+      const sentVia: string[] = [];
+      if (body.client_email) {
+        const email = await sendEmail({
+          to: body.client_email,
+          subject: `${orgNameForInvite} booked an interpreter for your appointment`,
+          text:
+            `Hi${body.client_name ? ' ' + body.client_name : ''},\n\n` +
+            `${orgNameForInvite} has scheduled an ASL interpreter for your ` +
+            `appointment${body.scheduled_start ? ' on ' + whenLabel : ''}.\n\n` +
+            `You don't need to do anything — the business is covering the cost ` +
+            `under the ADA. But if you'd like to see the interpreter's profile, ` +
+            `message them before the appointment, or track their arrival, you can ` +
+            `here:\n\n${link}\n\n` +
+            `If you don't want these updates, just ignore this message.`,
+        });
+        if (email.ok) sentVia.push('email');
+      }
+      if (body.client_phone) {
+        const sms = await sendSms({
+          to: body.client_phone,
+          body:
+            `PAH: ${orgNameForInvite} booked an ASL interpreter for your ` +
+            `appointment${body.scheduled_start ? ' on ' + whenLabel : ''}. ` +
+            `Track it here: ${link}`,
+        });
+        if (sms.ok) sentVia.push('sms');
+      }
+
+      await serviceClient.from('booking_invitations').insert({
+        booking_id: booking.id,
+        email: body.client_email || null,
+        phone: body.client_phone || null,
+        full_name: body.client_name || null,
+        token_hash: hashToken(token),
+        sent_via: sentVia,
+        linked_user_id: existingClientProfileId,
+        status: existingClientProfileId ? 'accepted' : 'pending',
+        accepted_at: existingClientProfileId ? new Date().toISOString() : null,
+      });
+
+      // If we already linked the Deaf user (they had an account), also drop
+      // an in-app notification for them.
+      if (existingClientProfileId) {
+        await sendNotification({
+          userId: existingClientProfileId,
+          type: 'business_booked_for_you',
+          title: 'An interpreter was booked for you',
+          body: `${orgNameForInvite} scheduled an ASL interpreter for your appointment${body.scheduled_start ? ' on ' + whenLabel : ''}.`,
+          data: { booking_id: booking.id },
+        });
+      }
+    }
+
+    // C. Team-slot rows will be inserted by the matching + respond flow as
+    // interpreters accept. The bookings.requires_team flag drives whether
+    // secondary slots are matched.
 
     // If business approval needed, notify org admins
     if (needsBusinessApproval) {
@@ -261,6 +374,8 @@ export async function POST(request: Request) {
       scheduledEnd: body.scheduled_end ?? new Date(Date.now() + body.estimated_duration_minutes * 60 * 1000).toISOString(),
       deafUserId: isDeafUser ? user.id : null,
       preferences: preferencesSnapshot,
+      serviceState: body.state ?? null,
+      isInPerson: body.location_type === 'in_person',
     });
 
     if (match) {
@@ -281,6 +396,14 @@ export async function POST(request: Request) {
         match_score: match.score ?? 1.0,
         distance_miles: match.distanceMiles ?? 0,
       });
+
+      // Seed the primary team slot (idempotent — ignore unique violation if it already exists)
+      await serviceClient.from('booking_interpreters').upsert({
+        booking_id: booking.id,
+        interpreter_id: match.interpreterId,
+        role: 'primary',
+        status: 'offered',
+      }, { onConflict: 'booking_id,role' });
 
       await sendNotification({
         userId: match.userId,

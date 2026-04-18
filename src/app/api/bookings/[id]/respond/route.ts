@@ -106,6 +106,63 @@ export async function POST(
       .eq('interpreter_id', interpProfile.id)
       .eq('status', 'pending');
 
+    // Record this interpreter as the primary in the team roster
+    await serviceClient.from('booking_interpreters').upsert({
+      booking_id: id,
+      interpreter_id: interpProfile.id,
+      role: 'primary',
+      status: 'confirmed',
+      accepted_at: new Date().toISOString(),
+    }, { onConflict: 'booking_id,role' });
+
+    // If this booking requires a team and the team slot isn't filled yet, find + offer a second interpreter.
+    if (booking.requires_team && !booking.team_override_reason) {
+      const { data: existingTeamRow } = await serviceClient
+        .from('booking_interpreters')
+        .select('id')
+        .eq('booking_id', id)
+        .eq('role', 'team')
+        .maybeSingle();
+      if (!existingTeamRow) {
+        const teamMatch = await findAvailableInterpreter({
+          specialization: booking.specialization_required,
+          scheduledStart: booking.scheduled_start,
+          scheduledEnd: booking.scheduled_end,
+          excludeInterpreterIds: [interpProfile.id],
+          deafUserId: booking.deaf_user_id,
+          preferences: booking.interpreter_preferences_snapshot,
+          targetLat: booking.lat !== null ? Number(booking.lat) : null,
+          targetLng: booking.lng !== null ? Number(booking.lng) : null,
+          serviceState: booking.state ?? null,
+          isInPerson: booking.location_type === 'in_person',
+        });
+        if (teamMatch) {
+          await serviceClient.from('booking_interpreters').insert({
+            booking_id: id,
+            interpreter_id: teamMatch.interpreterId,
+            role: 'team',
+            status: 'offered',
+          });
+          await serviceClient.from('booking_offers').insert({
+            booking_id: id,
+            interpreter_id: teamMatch.interpreterId,
+            offer_order: 999,
+            status: 'pending',
+            expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+            match_score: teamMatch.score,
+            distance_miles: teamMatch.distanceMiles,
+          });
+          await sendNotification({
+            userId: teamMatch.userId,
+            type: 'team_booking_offer',
+            title: 'Team interpreter job offer',
+            body: `You've been offered the team role on a ${booking.specialization_required} booking.`,
+            data: { booking_id: id, role: 'team' },
+          });
+        }
+      }
+    }
+
     // Notify deaf user (SMS+email via dispatch)
     if (booking.deaf_user_id) {
       await sendNotification({
@@ -196,6 +253,8 @@ export async function POST(
     preferences: booking.interpreter_preferences_snapshot,
     targetLat: booking.lat !== null ? Number(booking.lat) : null,
     targetLng: booking.lng !== null ? Number(booking.lng) : null,
+    serviceState: booking.state ?? null,
+    isInPerson: booking.location_type === 'in_person',
   });
 
   if (nextMatch) {

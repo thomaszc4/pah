@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import type { Specialization, Gender } from '@/types';
-import { SPECIALIZATION_LABELS } from '@/types';
+import { SPECIALIZATION_LABELS, LICENSURE_STATES } from '@/types';
 
 const ALL_SPECS: Specialization[] = [
   'general', 'medical', 'legal', 'educational', 'mental_health',
@@ -434,6 +435,9 @@ export default function InterpreterProfilePage() {
         </div>
       </section>
 
+      {/* Licensed states */}
+      <LicensureSection />
+
       {/* Service radius */}
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <h2 className="text-lg font-semibold text-slate-900 mb-3">Service radius</h2>
@@ -601,5 +605,104 @@ export default function InterpreterProfilePage() {
         </button>
       </div>
     </div>
+  );
+}
+
+function LicensureSection() {
+  const [data, setData] = useState<{
+    nationwide: boolean;
+    licensed_states: string[];
+    pending_verification: number;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/interpreter/licensure')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setData(d));
+  }, []);
+
+  const missingStates = LICENSURE_STATES.filter(
+    (s) => !(data?.licensed_states ?? []).includes(s),
+  );
+
+  return (
+    <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">State licensure</h2>
+      <p className="text-sm text-slate-600 mb-4">
+        Some states require an additional license beyond national certification for
+        in-person interpreting (e.g., BEI in Texas). You&apos;re automatically eligible to
+        claim in-person bookings only in states where your verified credentials apply.
+      </p>
+
+      {!data ? (
+        <p className="text-sm text-slate-500">Checking licensure…</p>
+      ) : (
+        <div className="space-y-3">
+          {data.nationwide && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm text-emerald-900">
+              <strong>Nationwide credentials verified.</strong> You&apos;re eligible for
+              in-person bookings in all states that don&apos;t require a separate license.
+            </div>
+          )}
+
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-600 mb-2">
+              Licensure-required states you&apos;re currently eligible in
+            </div>
+            {data.licensed_states.length === 0 ? (
+              <p className="text-sm text-slate-600">
+                None of the licensure-required states — you&apos;ll only see in-person
+                bookings in non-licensure states right now.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {data.licensed_states.map((s) => (
+                  <span
+                    key={s}
+                    className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800"
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {missingStates.length > 0 && (
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wider text-slate-600 mb-2">
+                Not eligible in these licensure states
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {missingStates.map((s) => (
+                  <span
+                    key={s}
+                    className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600"
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-slate-600 mt-2">
+                To work in-person in these states, upload the relevant state credential
+                in your{' '}
+                <Link href="/interpreter/certifications" className="text-blue-700 hover:underline">
+                  certifications
+                </Link>
+                .
+              </p>
+            </div>
+          )}
+
+          {data.pending_verification > 0 && (
+            <p className="text-xs text-amber-700">
+              You have {data.pending_verification} certification
+              {data.pending_verification === 1 ? '' : 's'} pending admin verification —
+              licensure will update once those are reviewed.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

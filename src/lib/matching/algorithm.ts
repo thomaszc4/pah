@@ -1,5 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { haversineMiles } from '@/lib/utils/geo';
+import { isEligibleForInPerson } from '@/lib/licensure/stateMatrix';
+import type { CertificationType } from '@/types';
 
 /**
  * Scored matching — Feature #17 Priority Dispatch.
@@ -40,6 +42,10 @@ export interface FindMatchInput {
   /** Target location for distance scoring (in-person bookings). */
   targetLat?: number | null;
   targetLng?: number | null;
+  /** State of service — used to enforce state-licensure rules for in-person. */
+  serviceState?: string | null;
+  /** Whether this booking is in-person (licensure matters) or VRI (warn-only). */
+  isInPerson?: boolean;
   /** If provided, returns top-N instead of top-1. */
   topN?: number;
 }
@@ -118,8 +124,34 @@ export async function findMatchCandidates(
   const available = withConflicts.filter((c): c is InterpreterRow => c !== null);
   if (available.length === 0) return [];
 
+  // State licensure filter (hard gate for in-person in licensure states).
+  let stateFiltered = available;
+  if (input.isInPerson && input.serviceState) {
+    const interpIds = available.map((c) => c.id);
+    const { data: certRows } = await supabase
+      .from('certifications')
+      .select('interpreter_id, cert_type, valid_in_states, verification_status')
+      .in('interpreter_id', interpIds)
+      .eq('verification_status', 'verified');
+    const certsByInterp = new Map<string, Array<{ cert_type: CertificationType; valid_in_states: string[] | null }>>();
+    for (const row of certRows ?? []) {
+      const interpreterId = row.interpreter_id as string;
+      const list = certsByInterp.get(interpreterId) ?? [];
+      list.push({
+        cert_type: row.cert_type as CertificationType,
+        valid_in_states: (row.valid_in_states as string[] | null) ?? [],
+      });
+      certsByInterp.set(interpreterId, list);
+    }
+    stateFiltered = available.filter((c) => {
+      const certs = certsByInterp.get(c.id) ?? [];
+      return isEligibleForInPerson(certs, input.serviceState!);
+    });
+  }
+  if (stateFiltered.length === 0) return [];
+
   // Count pending offers per interpreter for fairness penalty.
-  const interpIds = available.map((c) => c.id);
+  const interpIds = stateFiltered.map((c) => c.id);
   const { data: pendingOffers } = await supabase
     .from('booking_offers')
     .select('interpreter_id')
@@ -132,7 +164,7 @@ export async function findMatchCandidates(
   }
 
   // Score everyone.
-  const scored: MatchResult[] = available.map((c) => {
+  const scored: MatchResult[] = stateFiltered.map((c) => {
     let score = 0;
     // Specialization match (we already filtered via contains, so +50 is implicit)
     score += 50;

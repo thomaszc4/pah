@@ -396,29 +396,45 @@ export default function BookingDetailPage({
 
         {/* Feedback prompt (#7) */}
         {showFeedbackPrompt && (
-          <div className="p-6 border-t border-slate-100 bg-amber-50">
-            <h3 className="font-semibold text-amber-900 mb-2">How was your interpreter?</h3>
-            <Link
-              href={`/bookings/${id}/feedback`}
-              className="inline-flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium"
-            >
-              Leave feedback
-            </Link>
+          <div className="p-6 border-t border-slate-100 bg-amber-50 space-y-2">
+            <h3 className="font-semibold text-amber-900">How was your experience?</h3>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href={`/bookings/${id}/feedback`}
+                className="inline-flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium"
+              >
+                Rate the interpreter
+              </Link>
+              {booking.organization_id && (
+                <Link
+                  href={`/bookings/${id}/feedback/business`}
+                  className="inline-flex items-center px-4 py-2 bg-white border border-amber-400 text-amber-900 hover:bg-amber-100 rounded-xl text-sm font-medium"
+                >
+                  Rate {booking.organization?.name ?? 'the business'}
+                </Link>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Cancel */}
-        {canCancel && (
-          <div className="p-6 border-t border-slate-100">
+        {/* Actions row */}
+        <div className="p-6 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+          <a
+            href={`/api/bookings/${id}/ics`}
+            className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg text-xs font-medium text-slate-800 transition-colors"
+          >
+            📅 Add to calendar
+          </a>
+          {canCancel && (
             <button
               onClick={handleCancel}
               disabled={cancelling}
-              className="text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50"
+              className="text-rose-700 hover:text-rose-800 text-sm font-medium disabled:opacity-50"
             >
               {cancelling ? 'Cancelling…' : 'Cancel booking'}
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* #13 Live map */}

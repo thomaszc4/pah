@@ -17,6 +17,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get('redirect');
+  const invitation = searchParams.get('invitation');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -36,6 +37,11 @@ function LoginForm() {
     if (loginError) {
       setError(loginError.message);
       setLoading(false);
+      return;
+    }
+
+    if (invitation) {
+      router.push(`/invite/${invitation}`);
       return;
     }
 
